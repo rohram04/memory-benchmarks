@@ -2,18 +2,25 @@
 
 MM lives in a separate repo (default ~/MemoryManager, override with
 MEMORYMANAGER_PATH). Unlike mem0's stateless extract→search pipeline, MM is a
-stateful managed-context system: we ingest the conversation turn-by-turn, then
-at answer time surface relevant memory into its context (PREP), let the SAME
-harness answerer generate the answer from those surfaced blocks, and persist the
-exchange (PERSIST). Only the surfaced memory differs from the mem0 path — the
-answerer prompt + model and the judge stay identical, so the memory system is
-the sole variable.
+stateful managed-context system. Each benchmark question gets a fresh Agent with
+an isolated in-memory LongTermStore.
 
-Construction mirrors MM's own eval/agent_server.py wiring. The LLM backend
-(OpenRouter, gpt-4o family) and the embedder are process-wide singletons built
-once and shared across per-question agents (both are safe for concurrent
-inference); each question gets its own Agent with an isolated in-memory
-LongTermStore.
+Two memory modes mirror Agent's native turn structures (REPLY is always the
+external harness answerer, not MM's model):
+
+  llm mode — ingest:  PREP(user) → PERSIST(user, assistant) per haystack pair
+             query:   PREP(question) → harness answer → PERSIST(question, answer)
+
+  algorithmic mode — ingest:  receive(user) → receive(assistant) per pair
+                     query:   receive(question) → harness answer → receive(answer)
+
+Only the surfaced memory differs from the mem0 path — the answerer prompt,
+model, and judge stay identical, so the memory system is the sole variable.
+
+LLM-mode ingest is expensive (~2 tool-loop calls per haystack pair).
+
+The LLM backend (OpenRouter, gpt-4o family) and embedder are process-wide
+singletons built once and shared across per-question agents.
 """
 
 from __future__ import annotations
@@ -93,36 +100,35 @@ def make_mm_agent(
     )
 
 
-def _join_chunk(chunk) -> str:
-    """Render one ingestion chunk (a user+assistant pair) as plain text."""
+def _split_pair(chunk) -> tuple[str, str]:
+    """Extract user and assistant content from one haystack pair."""
     if isinstance(chunk, str):
-        return chunk
-    parts = []
+        return chunk, ""
+    user = assistant = ""
     for msg in chunk:
-        if isinstance(msg, dict):
-            parts.append(f"{msg.get('role', '')}: {msg.get('content', '')}")
-        else:
-            parts.append(str(msg))
-    return "\n".join(parts)
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "user":
+            user = content
+        elif role == "assistant":
+            assistant = content
+    return user, assistant
 
 
-def mm_ingest(agent, pairs) -> None:
-    """Ingest each conversation chunk into MM's memory lifecycle (no LLM reply)."""
-    for chunk in pairs:
-        text = _join_chunk(chunk)
-        if text.strip():
-            agent.ingest(text)
+def _algorithmic_receive(agent, content: str) -> None:
+    """One receive() pass — mirrors the memory half of _algorithmic_turn."""
+    if not content.strip():
+        return
+    embedding = agent._controller.embed(content)
+    agent._controller.receive(
+        content, embedding, agent._novelty_fn(content, embedding)
+    )
 
 
-def mm_surface_and_format(agent, question_text: str) -> list[dict]:
-    """PREP: surface relevant memory into context, then return the in-context
-    blocks shaped like the harness's search results ({memory, score, created_at})
-    so they feed the unchanged get_answer_generation_prompt.
-
-    created_at is None for now — threading session dates onto blocks is a tracked
-    follow-up in MemoryManager (disadvantages MM on temporal-reasoning questions).
-    """
-    agent._llm_prep_phase(question_text)
+def _format_blocks(agent) -> list[dict]:
+    """Return in-context blocks shaped like mem0 search hits for the harness."""
     blocks = agent._controller._cm._store.all_blocks()
     return [
         {
@@ -134,6 +140,44 @@ def mm_surface_and_format(agent, question_text: str) -> list[dict]:
     ]
 
 
+def mm_ingest(agent, pairs) -> None:
+    """Ingest haystack pairs using the agent's native mode lifecycle (no REPLY)."""
+    from agent import MemoryMode
+
+    for chunk in pairs:
+        user, assistant = _split_pair(chunk)
+        if not user.strip() and not assistant.strip():
+            continue
+        if agent._mode == MemoryMode.LLM:
+            if user.strip():
+                agent._llm_prep_phase(user)
+            if user.strip() or assistant.strip():
+                agent._llm_persist_phase(user, assistant)
+        else:
+            _algorithmic_receive(agent, user)
+            _algorithmic_receive(agent, assistant)
+
+
+def mm_surface_and_format(agent, question_text: str) -> list[dict]:
+    """Surface relevant memory into context, then return blocks for the harness.
+
+    created_at is None for now — threading session dates onto blocks is a tracked
+    follow-up in MemoryManager (disadvantages MM on temporal-reasoning questions).
+    """
+    from agent import MemoryMode
+
+    if agent._mode == MemoryMode.LLM:
+        agent._llm_prep_phase(question_text)
+    else:
+        _algorithmic_receive(agent, question_text)
+    return _format_blocks(agent)
+
+
 def mm_persist(agent, question_text: str, answer: str) -> None:
-    """PERSIST: store the exchange and re-score novelty."""
-    agent._llm_persist_phase(question_text, answer)
+    """Persist the Q+A exchange after the harness answer."""
+    from agent import MemoryMode
+
+    if agent._mode == MemoryMode.LLM:
+        agent._llm_persist_phase(question_text, answer)
+    else:
+        _algorithmic_receive(agent, answer)
