@@ -46,9 +46,12 @@ def _ensure(embedding_model: str):
             # OPENROUTER_API_KEY from env / MM's repo-root .env.
             _BACKEND = make_llm_backend(backend="openrouter")
         if _EMBEDDER is None:
-            from sentence_transformers import SentenceTransformer
+            from memory.embeddings import make_embedder  # MM's embedder factory
 
-            _EMBEDDER = SentenceTransformer(embedding_model)
+            # Resolves a spec to the right backend: "text-embedding-3-small" /
+            # "openai:<m>" (OpenAI direct), "openrouter:<m>" (via OpenRouter), or
+            # a sentence-transformers name (local). Matches mem0 OSS's embedder.
+            _EMBEDDER = make_embedder(embedding_model)
     return _BACKEND, _EMBEDDER
 
 
@@ -56,7 +59,7 @@ def make_mm_agent(
     max_tokens: int,
     model: str = "openai/gpt-4o",
     util_model: str = "openai/gpt-4o-mini",
-    embedding_model: str = "all-MiniLM-L6-v2",
+    embedding_model: str = "openrouter:openai/text-embedding-3-small",
     novelty_mode=None,
     mode: str = "llm",
 ):

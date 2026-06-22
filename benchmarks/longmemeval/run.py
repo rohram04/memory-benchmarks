@@ -528,6 +528,7 @@ async def ingest_question_mm(question, args, run_id, logger, shutdown):
 
     agent = mm_bridge.make_mm_agent(
         args.mm_max_tokens, model=args.mm_model, util_model=args.mm_util_model,
+        embedding_model=args.mm_embedding_model,
     )
     await asyncio.to_thread(mm_bridge.mm_ingest, agent, all_pairs)
     logger.info("MM ingested question %s: %d pairs", question_id, len(all_pairs))
@@ -1115,6 +1116,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mm-util-model", default="openai/gpt-4o-mini",
         help="MemoryManager util model for compress/merge/novelty (memorymanager backend).",
+    )
+    parser.add_argument(
+        "--mm-embedding-model", default="openrouter:openai/text-embedding-3-small",
+        help="MemoryManager embedder (memorymanager backend). Default routes via "
+             "OpenRouter (OPENROUTER_API_KEY). Also accepts 'openai:<m>'/'text-embedding-3-small' "
+             "(OpenAI direct) or a sentence-transformers name for a local keyless embedder.",
     )
     return parser.parse_args()
 
