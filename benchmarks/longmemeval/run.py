@@ -518,19 +518,23 @@ async def ingest_question_mm(question, args, run_id, logger, shutdown):
     sorted_sessions = sort_sessions_chronologically(question)
 
     all_pairs: list = []
-    for _session_id, _date_str, session in sorted_sessions:
+    all_dates: list = []  # real-world session date per pair (parallel to all_pairs)
+    for _session_id, date_str, session in sorted_sessions:
         if not session:
             continue
+        ts = parse_longmemeval_date(date_str) if date_str else None
+        session_date = datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
         for messages in pair_turns(session):
             if any(not msg.get("content", "").strip() for msg in messages):
                 continue
             all_pairs.append(messages)
+            all_dates.append(session_date)
 
     agent = mm_bridge.make_mm_agent(
         args.mm_max_tokens, model=args.mm_model, util_model=args.mm_util_model,
         embedding_model=args.mm_embedding_model, mode=args.mm_memory_mode,
     )
-    await asyncio.to_thread(mm_bridge.mm_ingest, agent, all_pairs)
+    await asyncio.to_thread(mm_bridge.mm_ingest, agent, all_pairs, all_dates)
     logger.info("MM ingested question %s: %d pairs", question_id, len(all_pairs))
     return True, agent, len(all_pairs)
 
