@@ -533,6 +533,7 @@ async def ingest_question_mm(question, args, run_id, logger, shutdown):
     agent = mm_bridge.make_mm_agent(
         args.mm_max_tokens, model=args.mm_model, util_model=args.mm_util_model,
         embedding_model=args.mm_embedding_model, mode=args.mm_memory_mode,
+        clock_seconds_per_turn=args.mm_clock_seconds_per_turn,
     )
     await asyncio.to_thread(mm_bridge.mm_ingest, agent, all_pairs, all_dates)
     logger.info("MM ingested question %s: %d pairs", question_id, len(all_pairs))
@@ -1134,6 +1135,13 @@ def parse_args() -> argparse.Namespace:
              "ingest and query (~2 tool loops per haystack pair). 'algorithmic': dual "
              "receive() ingest and query (no LLM memory tools).",
     )
+    parser.add_argument(
+        "--mm-clock-seconds-per-turn", type=float, default=0.0,
+        help="MemoryManager simulated decay clock (memorymanager backend). 0 => "
+             "wall-clock (default). >0 => advance logical time by this many seconds "
+             "per turn (receive() or LLM persist); 600 gives meaningful recency decay "
+             "during fast batch ingest.",
+    )
     return parser.parse_args()
 
 
@@ -1324,6 +1332,7 @@ async def async_main() -> None:
     mm_mode = backend == "memorymanager"
     if mm_mode:
         print(f"  MM memory mode: {args.mm_memory_mode}")
+        print(f"  MM clock seconds/turn: {args.mm_clock_seconds_per_turn}")
         if args.mode == "retrieval":
             raise SystemExit("memorymanager backend supports --mode answerer only.")
         # MM yields one managed context window, not top-k cutoffs. Collapse to a

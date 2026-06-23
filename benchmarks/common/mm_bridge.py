@@ -73,25 +73,29 @@ def make_mm_agent(
     embedding_model: str = "openrouter:openai/text-embedding-3-small",
     novelty_mode=None,
     mode: str = "llm",
+    clock_seconds_per_turn: float = 0.0,
 ):
     """Build a fresh, isolated MemoryManager Agent for one benchmark question."""
     from agent import Agent, MemoryMode
     from controller import MemoryController
     from ContextManager import ContextManager
     from functions.llm_fns import make_compress_fn, make_merge_fn
+    from memory.config import MemoryConfig
     from memory.longterm import LongTermStore
     from memory.novelty import NoveltyMode
     from memory.store import ContextStore
 
     backend, embedder = _ensure(embedding_model)
 
-    store = ContextStore(max_tokens=max_tokens)
+    cfg = MemoryConfig(clock_seconds_per_turn=clock_seconds_per_turn)
+    store = ContextStore(max_tokens=max_tokens, config=cfg)
     lt = LongTermStore("sqlite:///:memory:")  # isolated per agent; StaticPool = thread-safe
-    cm = ContextManager(store, lt, embedding_model=embedder)
+    cm = ContextManager(store, lt, embedding_model=embedder, config=cfg)
     controller = MemoryController(
         cm,
         compress_fn=make_compress_fn(backend, util_model),
         merge_fn=make_merge_fn(backend, cm, util_model),
+        config=cfg,
     )
     mm_mode = MemoryMode.LLM if str(mode).lower() == "llm" else MemoryMode.ALGORITHMIC
     return Agent(
